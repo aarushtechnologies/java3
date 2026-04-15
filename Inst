@@ -1,0 +1,193 @@
+Great, this output is actually very helpful.
+
+### ✅ What we know now:
+
+* `vxlan` module is **loaded** ✔️
+* But:
+
+  ```bash
+  ip a | grep vxlan
+  ```
+
+  shows **nothing** ❌
+
+👉 That means:
+
+> 🔴 Docker **has NOT created the VXLAN interface** → overlay network is not functioning
+
+---
+
+# 🎯 Root cause (based on all your symptoms)
+
+At this point, the most likely issues are:
+
+### 🔴 1. firewalld still blocking overlay traffic
+
+Even if ports are added, CentOS sometimes still blocks forwarding internally.
+
+---
+
+# 🚀 Fix this properly (not just ports)
+
+## Step 1: Put Docker in trusted zone
+
+On BOTH nodes:
+
+```bash id="s6d9t2"
+sudo firewall-cmd --permanent --zone=trusted --add-interface=docker0
+sudo firewall-cmd --permanent --zone=trusted --add-interface=eth0
+sudo firewall-cmd --reload
+```
+
+*(replace `eth0` if your interface name is different — check with `ip a`)*
+
+---
+
+## Step 2: Enable masquerading (critical)
+
+```bash id="y2v0h8"
+sudo firewall-cmd --permanent --add-masquerade
+sudo firewall-cmd --reload
+```
+
+---
+
+## Step 3: Open full swarm port set again
+
+```bash id="4h0l8r"
+sudo firewall-cmd --permanent --add-port=2377/tcp
+sudo firewall-cmd --permanent --add-port=7946/tcp
+sudo firewall-cmd --permanent --add-port=7946/udp
+sudo firewall-cmd --permanent --add-port=4789/udp
+sudo firewall-cmd --permanent --add-port=9001/tcp
+sudo firewall-cmd --reload
+```
+
+---
+
+## Step 4: Restart everything cleanly
+
+On **worker FIRST**, then manager:
+
+```bash id="s9c3p1"
+sudo systemctl restart docker
+```
+
+---
+
+## Step 5: Recreate the service (important)
+
+```bash id="k1x8n4"
+docker service rm html-app
+docker service create --name html-app -p 9001:80 nginx
+```
+
+---
+
+## Step 6: Check again
+
+```bash id="u5q8z2"
+ip a | grep vxlan
+```
+
+👉 Now you should see something like:
+
+```
+vxlan0
+```
+
+---
+
+# 🧪 Test again
+
+On worker:
+
+```bash id="p4j9w6"
+curl http://localhost:9001
+```
+
+---
+
+# 🔥 If STILL no vxlan interface
+
+Then we go one level deeper:
+
+## 🔴 Check this (VERY important on CentOS)
+
+```bash id="c2v7m1"
+sysctl net.bridge.bridge-nf-call-iptables
+```
+
+If result is:
+
+```
+0
+```
+
+👉 Fix:
+
+```bash id="g7t2q9"
+sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+sudo sysctl -w net.ipv4.ip_forward=1
+```
+
+Persist it:
+
+```bash id="m8d4r2"
+echo "net.bridge.bridge-nf-call-iptables=1" | sudo tee -a /etc/sysctl.conf
+echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
+```
+
+---
+
+# 🧠 Why vxlan interface is missing
+
+Docker only creates `vxlan0` when:
+
+* nodes can communicate over UDP 4789
+* firewall allows forwarding
+* kernel networking is enabled
+
+Right now → one of these is blocked.
+
+---
+
+# ✅ Most likely final answer
+
+Given your exact symptoms:
+
+> 🔴 firewalld is blocking overlay networking (even if ports seem open)
+
+---
+
+# ⚡ Quick brute-force test (just to confirm)
+
+```bash id="b3t8k1"
+sudo systemctl stop firewalld
+sudo systemctl restart docker
+```
+
+Then:
+
+```bash id="r9y5n2"
+ip a | grep vxlan
+curl http://localhost:9001
+```
+
+---
+
+## 👉 If this works:
+
+We’ve confirmed **100% firewall issue**
+
+---
+
+If you want, paste this:
+
+```bash
+ip a
+firewall-cmd --list-all
+docker network inspect ingress
+```
+
+I’ll give you the exact minimal fix (no guesswork).
